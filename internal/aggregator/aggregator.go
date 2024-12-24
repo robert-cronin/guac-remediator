@@ -1,92 +1,146 @@
 package aggregator
 
 import (
-	"bytes"
-	"encoding/json"
-	"io/ioutil"
-	"net/http"
+	"context"
+	"fmt"
 	"time"
 
+	"github.com/Khan/genqlient/graphql"
+	model "github.com/guacsec/guac/pkg/assembler/clients/generated"
 	"github.com/robert-cronin/guac-remediator/internal/store"
 )
 
-// aggregator
+// Aggregator is the interface for polling vulnerabilities.
 type Aggregator interface {
-	Poll() ([]store.VulnerabilityRecord, error)
+	Start(ctx context.Context)
+	Stop()
 }
 
-// graphqlaggregator
-type GraphQLAggregator struct {
-	endpoint string
-	store    store.Store
-	client   *http.Client
+// GUACAggregator periodically queries guac, paginating CertifyVulnList results.
+type GUACAggregator struct {
+	client       graphql.Client
+	store        store.Store
+	pollInterval time.Duration
+	stopCh       chan struct{}
+	seenIDs      map[string]bool
 }
 
-// newgraphqlaggregator
-func NewGraphQLAggregator(endpoint string, s store.Store) *GraphQLAggregator {
-	return &GraphQLAggregator{
-		endpoint: endpoint,
-		store:    s,
-		client:   &http.Client{Timeout: 10 * time.Second},
+// NewGUACAggregatorPoller creates a GUACAggregator with a default interval of 5m unless specified.
+func NewGUACAggregatorPoller(client graphql.Client, s store.Store, interval time.Duration) *GUACAggregator {
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	return &GUACAggregator{
+		client:       client,
+		store:        s,
+		pollInterval: interval,
+		stopCh:       make(chan struct{}),
+		seenIDs:      make(map[string]bool),
 	}
 }
 
-// poll
-func (g *GraphQLAggregator) Poll() ([]store.VulnerabilityRecord, error) {
-	// build minimal graphql query
-	query := `
-        query {
-          vulnerabilities {
-            id
-            severity
-            title
-            purl
-          }
-        }
-    `
-	body, err := json.Marshal(map[string]string{"query": query})
+// Start begins polling in a background goroutine.
+func (g *GUACAggregator) Start(ctx context.Context) {
+	err := g.pollOnce(ctx)
 	if err != nil {
-		return nil, err
+		fmt.Println("poll error:", err)
 	}
 
-	req, err := http.NewRequest("POST", g.endpoint, bytes.NewBuffer(body))
-	if err != nil {
-		return nil, err
+	ticker := time.NewTicker(g.pollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			err := g.pollOnce(ctx)
+			if err != nil {
+				fmt.Println("poll error:", err)
+			}
+		case <-g.stopCh:
+			return
+		case <-ctx.Done():
+			return
+		}
 	}
-	req.Header.Set("Content-Type", "application/json")
+}
 
-	resp, err := g.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+// Stop signals the poller to stop.
+func (g *GUACAggregator) Stop() {
+	close(g.stopCh)
+}
 
-	payload, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+// pollOnce runs a single poll cycle, fetching pages until exhausted.
+func (g *GUACAggregator) pollOnce(ctx context.Context) error {
+	var afterId *string = nil
+	pageSize := 20
+
+	for {
+		resp, err := model.CertifyVulnList(ctx, g.client, buildCertifyVulnFilter(), afterId, &pageSize)
+		if err != nil {
+			return err
+		}
+
+		list := resp.GetCertifyVulnList()
+		if list == nil || len(list.Edges) == 0 {
+			break
+		}
+
+		// process each edge
+		var newRecords []store.VulnerabilityRecord
+		for _, edge := range list.Edges {
+			node := edge.GetNode()
+
+			// skip if we've seen it
+			if g.seenIDs[node.Id] {
+				continue
+			}
+			g.seenIDs[node.Id] = true
+
+			vr := store.VulnerabilityRecord{
+				ID:          node.Id,
+				CertifyVuln: node.AllCertifyVuln,
+			}
+			newRecords = append(newRecords, vr)
+		}
+
+		// store newly discovered
+		if len(newRecords) > 0 {
+			err := g.store.SaveVulnerabilityRecords(newRecords)
+			if err != nil {
+				return err
+			}
+		}
+
+		// move afterId
+		if list.PageInfo.HasNextPage && list.PageInfo.EndCursor != nil {
+			afterId = list.PageInfo.EndCursor
+		} else {
+			break
+		}
 	}
 
-	// define a small struct to unmarshal data
-	var result struct {
-		Data struct {
-			Vulnerabilities []store.VulnerabilityRecord `json:"vulnerabilities"`
-		} `json:"data"`
-	}
+	return nil
+}
 
-	err = json.Unmarshal(payload, &result)
-	if err != nil {
-		return nil, err
-	}
+// buildCertifyVulnFilter returns a simple CertifyVulnSpec
+func buildCertifyVulnFilter() model.CertifyVulnSpec {
+	// mockFilter := model.CertifyVulnSpec{
+	// 	Id: utils.Ptr(""),
+	// 	Package: &model.PkgSpec{
+	// 		Id:        utils.Ptr(""),
+	// 		Type:      utils.Ptr(""),
+	// 		Namespace: utils.Ptr(""),
+	// 		Name:      utils.Ptr(""),
+	// 		Version:   utils.Ptr(""),
+	// 	},
+	// 	Vulnerability: &model.VulnerabilitySpec{
+	// 		Id:              utils.Ptr(""),
+	// 		Type:            utils.Ptr(""),
+	// 		VulnerabilityID: utils.Ptr(""),
+	// 		NoVuln:          utils.Ptr(false),
+	// 	},
+	// 	Origin:    utils.Ptr(""),
+	// 	Collector: utils.Ptr(""),
+	// }
 
-	// optionally store them
-	now := time.Now().Unix()
-	for i := range result.Data.Vulnerabilities {
-		result.Data.Vulnerabilities[i].DiscoveredAt = now
-	}
-	err = g.store.SaveVulnerabilityRecords(result.Data.Vulnerabilities)
-	if err != nil {
-		return nil, err
-	}
-
-	return result.Data.Vulnerabilities, nil
+	return model.CertifyVulnSpec{}
 }

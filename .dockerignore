@@ -1,0 +1,9 @@
+# Exclude all files by default
+**
+
+# Allow necessary directories and files
+!cmd/**
+!internal/**
+!go.mod
+!go.sum
+!Taskfile.yaml

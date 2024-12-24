@@ -1,0 +1,43 @@
+version: '3'
+
+tasks:
+  build:
+    desc: build the guac-remediator binary
+    cmds:
+      - go build -o bin/guac-remediator ./cmd/guac-remediator
+    sources:
+      - cmd/**/*.go
+      - internal/**/*.go
+    generates:
+      - bin/guac-remediator
+
+  test:
+    desc: run unit tests
+    cmds:
+      - go test -v ./...
+    deps: [build]
+
+  lint:
+    desc: run static checks
+    cmds:
+      - go vet ./...
+      - go fmt ./...
+    silent: true
+
+  run:
+    desc: run guac-remediator locally
+    cmds:
+      - bin/guac-remediator
+    deps: [build]
+
+  docker:build:
+    desc: build docker image
+    cmds:
+      - docker build -t guac-remediator .
+    deps: [build]
+
+  docker:run:
+    desc: run guac-remediator container
+    cmds:
+      - docker run --rm guac-remediator
+    deps: [docker:build]
