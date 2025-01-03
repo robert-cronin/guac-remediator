@@ -7,6 +7,7 @@ import (
 
 	"github.com/Khan/genqlient/graphql"
 	model "github.com/guacsec/guac/pkg/assembler/clients/generated"
+	"github.com/robert-cronin/guac-remediator/internal/event"
 	"github.com/robert-cronin/guac-remediator/internal/store"
 )
 
@@ -23,10 +24,11 @@ type GUACAggregator struct {
 	pollInterval time.Duration
 	stopCh       chan struct{}
 	seenIDs      map[string]bool
+	eventBus     *event.EventBus
 }
 
 // NewGUACAggregatorPoller creates a GUACAggregator with a default interval of 5m unless specified.
-func NewGUACAggregatorPoller(client graphql.Client, s store.Store, interval time.Duration) *GUACAggregator {
+func NewGUACAggregatorPoller(client graphql.Client, s store.Store, interval time.Duration, bus *event.EventBus) *GUACAggregator {
 	if interval <= 0 {
 		interval = 5 * time.Minute
 	}
@@ -36,6 +38,7 @@ func NewGUACAggregatorPoller(client graphql.Client, s store.Store, interval time
 		pollInterval: interval,
 		stopCh:       make(chan struct{}),
 		seenIDs:      make(map[string]bool),
+		eventBus:     bus,
 	}
 }
 
@@ -70,11 +73,12 @@ func (g *GUACAggregator) Stop() {
 
 // pollOnce runs a single poll cycle, fetching pages until exhausted.
 func (g *GUACAggregator) pollOnce(ctx context.Context) error {
-	var afterId *string = nil
+	var afterId *string
 	pageSize := 20
 
 	for {
-		resp, err := model.CertifyVulnList(ctx, g.client, buildCertifyVulnFilter(), afterId, &pageSize)
+		filter := buildCertifyVulnFilter()
+		resp, err := model.CertifyVulnList(ctx, g.client, filter, afterId, &pageSize)
 		if err != nil {
 			return err
 		}
@@ -89,7 +93,7 @@ func (g *GUACAggregator) pollOnce(ctx context.Context) error {
 		for _, edge := range list.Edges {
 			node := edge.GetNode()
 
-			// skip if we've seen it
+			// Skip if we've seen this node ID already.
 			if g.seenIDs[node.Id] {
 				continue
 			}
@@ -104,10 +108,17 @@ func (g *GUACAggregator) pollOnce(ctx context.Context) error {
 
 		// store newly discovered
 		if len(newRecords) > 0 {
-			err := g.store.SaveVulnerabilityRecords(newRecords)
+			err := g.store.SaveVulnerabilityRecords(ctx, newRecords)
 			if err != nil {
 				return err
 			}
+			// Publish an event for newly discovered vulnerabilities
+			g.eventBus.Publish(ctx, event.Event{
+				Type: event.VulnDiscovered,
+				Data: map[string]interface{}{
+					"records": newRecords,
+				},
+			})
 		}
 
 		// move afterId
@@ -121,26 +132,8 @@ func (g *GUACAggregator) pollOnce(ctx context.Context) error {
 	return nil
 }
 
-// buildCertifyVulnFilter returns a simple CertifyVulnSpec
+// buildCertifyVulnFilter returns a simple CertifyVulnSpec that retrieves all vulnerabilities.
 func buildCertifyVulnFilter() model.CertifyVulnSpec {
-	// mockFilter := model.CertifyVulnSpec{
-	// 	Id: utils.Ptr(""),
-	// 	Package: &model.PkgSpec{
-	// 		Id:        utils.Ptr(""),
-	// 		Type:      utils.Ptr(""),
-	// 		Namespace: utils.Ptr(""),
-	// 		Name:      utils.Ptr(""),
-	// 		Version:   utils.Ptr(""),
-	// 	},
-	// 	Vulnerability: &model.VulnerabilitySpec{
-	// 		Id:              utils.Ptr(""),
-	// 		Type:            utils.Ptr(""),
-	// 		VulnerabilityID: utils.Ptr(""),
-	// 		NoVuln:          utils.Ptr(false),
-	// 	},
-	// 	Origin:    utils.Ptr(""),
-	// 	Collector: utils.Ptr(""),
-	// }
-
+	// For this POC, we return everything. Custom filters could be added if needed.
 	return model.CertifyVulnSpec{}
 }

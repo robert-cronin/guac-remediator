@@ -82,7 +82,7 @@ func (f *FSMManager) RetryWorkflow(w *RemediationWorkflow) error {
 // optional: track timestamps or logs of transitions
 func (f *FSMManager) MarkTransition(w *RemediationWorkflow, note string) {
 	// TODO: implement
-	// store some metadata about transitions if needed
+	// store some metadata about transitions
 	// e.g., w.Steps = append(w.Steps, RemediationStep{...})
 	_ = note
 	// could track times or reasons for transitions

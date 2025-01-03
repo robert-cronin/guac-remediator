@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+
 	model "github.com/guacsec/guac/pkg/assembler/clients/generated"
 )
 
@@ -11,5 +13,5 @@ type VulnerabilityRecord struct {
 }
 
 type Store interface {
-	SaveVulnerabilityRecords(records []VulnerabilityRecord) error
+	SaveVulnerabilityRecords(ctx context.Context, records []VulnerabilityRecord) error
 }

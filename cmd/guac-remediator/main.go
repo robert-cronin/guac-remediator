@@ -5,6 +5,5 @@ import (
 )
 
 func main() {
-	// delegate to cobra command
 	cli.Execute()
 }

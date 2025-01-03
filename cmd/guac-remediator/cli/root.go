@@ -1,3 +1,4 @@
+// cmd/guac-remediator/cli/root.go
 package cli
 
 import (
@@ -11,6 +12,8 @@ import (
 
 	"github.com/Khan/genqlient/graphql"
 	"github.com/robert-cronin/guac-remediator/internal/aggregator"
+	"github.com/robert-cronin/guac-remediator/internal/event"
+	"github.com/robert-cronin/guac-remediator/internal/remediator"
 	"github.com/robert-cronin/guac-remediator/internal/store"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -36,8 +39,8 @@ func init() {
 	_ = viper.BindPFlag("poll_interval", rootCmd.PersistentFlags().Lookup("poll-interval"))
 
 	// set prefix or read env automatically
-	// e.g. GREM_GUAC_ENDPOINT, REM_POLL_INTERVAL
-	viper.SetEnvPrefix("GREM")
+	// e.g. REM_GUAC_ENDPOINT, REM_POLL_INTERVAL
+	viper.SetEnvPrefix("REM")
 	viper.AutomaticEnv()
 }
 
@@ -67,22 +70,39 @@ func runRoot(cmd *cobra.Command, args []string) {
 	// create store
 	mockStore := store.NewMockStore()
 
+	// create event bus
+    bus := event.NewEventBus()
+	
 	// create aggregator poller
-	agg := aggregator.NewGUACAggregatorPoller(gqlclient, mockStore, pollInterval)
+	agg := aggregator.NewGUACAggregatorPoller(gqlclient, mockStore, pollInterval, bus)
+
+	// create basic a remediator
+	basicRem := remediator.NewBasicRemediator()
+	if err := basicRem.Initialize(); err != nil {
+		fmt.Println("failed to init basicRemediator:", err)
+		return
+	}
+
+	// create the remediation manager
+	remManager := remediator.NewRemediationManager(basicRem, bus)
+
+	// create and subscribe orchestrator
+	orch := remediator.NewOrchestrator(remManager)
+	bus.Subscribe(orch)
 
 	fmt.Printf("starting guac-remediator aggregator poller...\n")
 	fmt.Printf("guac_endpoint: %s\n", guacEndpoint)
 	fmt.Printf("poll_interval: %s\n", pollInterval)
 
 	// start aggregator
-	agg.Start(ctx)
+	go agg.Start(ctx)
 
 	// wait for signal
 	select {
 	case <-sigCh:
 		fmt.Println("shutting down aggregator poller...")
 		agg.Stop()
-		time.Sleep(2 * time.Second) // optional grace period
+		time.Sleep(2 * time.Second) // grace period
 		fmt.Println("exiting")
 	}
 }

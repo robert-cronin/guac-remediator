@@ -3,6 +3,7 @@ package remediator
 import (
 	"fmt"
 
+	model "github.com/guacsec/guac/pkg/assembler/clients/generated"
 	"github.com/robert-cronin/guac-remediator/internal/state"
 )
 
@@ -15,10 +16,8 @@ type Remediator interface {
 }
 
 type StartRemediationParams struct {
-	VulnerabilityID string
-	Severity        string
-	ArtifactPurl    string
-	AuthCtx         AuthContext
+	Vulnerability model.AllCertifyVuln
+	AuthCtx       AuthContext
 }
 
 type AuthContext struct {
@@ -42,7 +41,6 @@ func NewBasicRemediator() *BasicRemediator {
 
 // Initialize
 func (br *BasicRemediator) Initialize() error {
-	// do any initialization needed
 	fmt.Println("basic remediator: initialized")
 	return nil
 }
@@ -51,8 +49,9 @@ func (br *BasicRemediator) Initialize() error {
 func (br *BasicRemediator) StartRemediation(params StartRemediationParams) (RemediationWorkflow, error) {
 	// create a new workflow
 	wf := RemediationWorkflow{
-		WorkflowID: "wf-" + params.VulnerabilityID,
+		WorkflowID: "wf-" + params.Vulnerability.Vulnerability.Id,
 		State:      state.StatePending,
+		// mock steps
 		Steps: []RemediationStep{
 			{Name: "download_patch"},
 			{Name: "apply_patch"},
