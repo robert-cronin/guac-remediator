@@ -7,6 +7,7 @@ import (
 
 	"github.com/Khan/genqlient/graphql"
 	model "github.com/guacsec/guac/pkg/assembler/clients/generated"
+	"github.com/guacsec/guac/pkg/assembler/helpers"
 	"github.com/robert-cronin/guac-remediator/internal/event"
 	"github.com/robert-cronin/guac-remediator/internal/store"
 )
@@ -136,4 +137,41 @@ func (g *GUACAggregator) pollOnce(ctx context.Context) error {
 func buildCertifyVulnFilter() model.CertifyVulnSpec {
 	// For this POC, we return everything. Custom filters could be added if needed.
 	return model.CertifyVulnSpec{}
+}
+
+// ========================================================================================
+
+// findTopLevelOCIForPkg queries guac to identify the top-level container purl
+// for a given pkg
+func findTopLevelOCIPurl(ctx context.Context, gqlclient graphql.Client, vulnID string) (string, error) {
+	filter := model.IsDependencySpec{}
+
+	resp, err := model.Dependencies(ctx, gqlclient, filter)
+	if err != nil {
+		return "", err
+	}
+
+	dependencies := resp.GetIsDependency()
+	// there should only be one top-level package
+	if len(dependencies) != 1 {
+		return "", fmt.Errorf("expected 1 top-level package, got %d", len(dependencies))
+	}
+
+	// see if there is an oci package
+	var ociIsDependency *model.DependenciesIsDependency
+	for _, dep := range dependencies {
+		pkg := dep.GetPackage()
+		if pkg.Type != "oci" {
+			ociIsDependency = &dep
+			break
+		}
+	}
+
+	if ociIsDependency == nil {
+		return "", fmt.Errorf("expected at least one oci package, got 0")
+	}
+
+	purl := helpers.AllPkgTreeToPurl(&ociIsDependency.Package.AllPkgTree)
+
+	return purl, nil
 }
